@@ -1,0 +1,37 @@
+What is IRAM_ATTR?
+In simple terms, IRAM_ATTR is a directive to the compiler that says: "Place the machine code for this specific function into the ESP32's Internal RAM (IRAM) instead of the default flash memory."
+
+To understand why this is crucial, you need to know a little about how the ESP32's memory works:
+
+Flash Memory: This is where your program sketch is stored permanently. It's like the hard drive of the ESP32. It's large but relatively slow to access.
+IRAM (Instruction RAM): This is a small, but extremely fast, block of RAM inside the ESP32 processor. It's used for executing code.
+Normally, when the ESP32 runs your code, it fetches instructions from the slower flash memory through a cache to speed things up.
+
+Why is it Essential for an Interrupt Function?
+There are two primary reasons why IRAM_ATTR is used on an Interrupt Service Routine (ISR) like ppmInterrupt():
+
+1. Speed and Low Latency
+
+An interrupt is a signal that demands the processor's immediate attention. In your project, a CHANGE on the PPM_INPUT_PIN triggers the interrupt. The code must immediately run to measure the time difference in microseconds.
+
+Without IRAM_ATTR: The ISR code is in flash. The processor has to stop, fetch the code from the slow flash (potentially waiting for the cache), and then execute it. This adds latency.
+With IRAM_ATTR: The ISR code is already in the super-fast IRAM. The processor can jump to it and execute it almost instantly. For a time-sensitive task like measuring a PPM signal, this minimal latency is essential for getting an accurate reading.
+2. Reliability and Preventing Crashes (The Most Important Reason)
+
+This is the critical part. The ESP32's flash memory can be busy and inaccessible at times. This happens most often during:
+
+Wi-Fi Operations: The Wi-Fi stack performs complex operations that can temporarily lock access to the flash.
+Writing to Flash: If your code were writing to the built-in file system (SPIFFS) or emulated EEPROM, the flash would be locked.
+Now, imagine this scenario:
+
+Your main loop() starts a Wi-Fi transmission, which locks the flash controller.
+At that exact moment, a PPM pulse arrives, and the ppmInterrupt is triggered.
+If the ppmInterrupt function's code is in flash, the CPU tries to fetch it but can't, because the flash is locked.
+The CPU is now stuck waiting for the flash to become available, but the interrupt has already happened.
+The result is a delayed or completely missed interrupt, which corrupts your PPM data. In a worst-case scenario, this can lead to a system crash or a watchdog timer reset because the CPU is frozen.
+
+By placing the ISR in IRAM with IRAM_ATTR, the function is completely independent of the flash memory's status. Even if the Wi-Fi is active or something is being written to flash, the CPU can always access and execute the ISR from IRAM without conflict or delay.
+
+In Summary:
+
+You use IRAM_ATTR on your ppmInterrupt function to guarantee that it will be fast and, more importantly, reliable. It ensures the code can run immediately and without fail, even when other parts of the ESP32 system are making the main flash memory busy. It's a fundamental technique for writing robust, real-time code on the ESP32.
