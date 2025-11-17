@@ -54,6 +54,30 @@ Only `Gimbal-tracking-Gemini.ino` needs to be uploaded to the ESP32. The helper 
 5. Wear the goggles, move your head slowly through its normal range, and verify the gimbal stays synchronized. If you feel oscillations, raise `smoothFactor`; if latency feels high, lower it instead.
 6. Once tuned, disconnect USB power, power the ESP32 from your flight battery/BEC, and strap it to the goggles or the headset strap.
 
-With this setup you get a resilient head-tracker passthrough: the goggles keep sending native PPM to the flight controller while the ESP32 produces a smooth, extended-range servo signal for the AtomRC gimbal.
+## Operating modes
+
+### 1. Wired PWM (single ESP32)
+```
+Skyzone HT OUT  ──> GPIO2 (PPM) ──> ESP32 ──> GPIO18/19 ──> AtomRC pan/tilt servos
+                              GND ────────────────────────┘
+```
+The goggles’ head-tracker signal is read and immediately turned into PWM on GPIO18/19. This is the original “two wires only” setup for benches or when the ESP32 sits close to the gimbal.
+
+### 2. ELRS bridge (UART payload)
+```
+[Goggles ESP32] --PPM--> smoothing --> UART TX17 ====> DIY ELRS TX (bind phrase X)
+                                       ^
+                                       |  (secret phrase set in ExpressLRS Configurator)
+                                       v
+[Drone ESP32] <== ELRS RX (same phrase) --UART--> packet decode --> GPIO18/19 servos
+```
+We reuse the existing ExpressLRS DIY hardware: the goggles ESP32 sends the smoothed angles over Serial1 to an ELRS TX module that shares your bind phrase. On the drone, an ELRS RX outputs the same serial stream to another ESP32, which drives the servos. A secret phrase means re-linking is automatic if power glitches.
+
+### 3. ESP-NOW pair (two ESP32s)
+```
+Goggles ESP32   Wi-Fi STA + ESP-NOW  ~~~wireless~~~  Drone ESP32
+PPM -> filter -> packet             <----MAC pair---->  packet -> servos
+```
+Both ESP32 boards talk directly over ESP-NOW using their Wi-Fi MAC addresses (fill them in at the top of the TX/RX sketches). No router, no FC involvement—just a private wireless bridge with the same smoothing and failsafe behavior.
 
 The convertion to UART signal over ELRS, with addition of 2 ELRS module (one used as tranmitter and the other one as receptor) is yet to come.
