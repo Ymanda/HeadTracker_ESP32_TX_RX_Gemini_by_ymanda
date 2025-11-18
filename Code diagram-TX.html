@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>HeadTracker TX Code Diagram</title>
+  <style>
+    body { font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif; background:#111; color:#eee; margin:0; padding:2rem; }
+    h1 { margin-top:0; }
+    .lane { display:flex; flex-direction:column; gap:1rem; max-width:900px; margin:auto; }
+    .box { border-left:6px solid #5bc0de; background:#1b1b1b; padding:1rem 1.5rem; box-shadow:0 4px 12px rgba(0,0,0,.4); }
+    .box h2 { margin:0 0 .5rem; font-size:1.25rem; color:#5bc0de; }
+    .box p { margin:.25rem 0; line-height:1.5; }
+    code { background:#222; padding:.1rem .3rem; border-radius:3px; }
+    .note { font-size:.9rem; color:#bbb; }
+    a { color:#9cdcf0; }
+  </style>
+</head>
+<body>
+  <h1>TX firmware overview (HeadTracker_ESP32_TX_Gemini_by_ymanda.ino)</h1>
+  <p class="note">Each panel below maps to a comment header in the source. Collapse by searching the same section titles.</p>
+  <div class="lane">
+
+    <div class="box">
+      <h2>1. Inputs &amp; globals</h2>
+      <p>Defines pins, servo ranges, smoothing factors, and the arrays used by the PPM interrupt (<code>ppmChannels[]</code>, timestamps, etc.).</p>
+      <p>Reference: lines around <code>// SECTION 1</code>.</p>
+    </div>
+
+    <div class="box">
+      <h2>2. PPM acquisition</h2>
+      <p>The ISR (<code>ppmInterrupt()</code>) timestamps each pulse, detects frame gaps, and fills <code>ppmChannels</code>. <code>processPPMFrame()</code> maps CH5/CH6 → degrees and handles deadband.</p>
+      <p>Reference: <code>// SECTION 4</code> in the code.</p>
+    </div>
+
+    <div class="box">
+      <h2>3. Mode selection</h2>
+      <p><code>OutputMode</code> enum + <code>handleOutputs()</code> decide whether we drive bench servos, emit CRSF frames, or send ESP‑NOW packets. Hardware/CLI switches feed <code>setOutputMode()</code>.</p>
+      <p>Reference: <code>// SECTION 2</code> and <code>// SECTION 6</code>.</p>
+    </div>
+
+    <div class="box">
+      <h2>4. CRSF transport</h2>
+      <p><code>sendCrsfRcFrame()</code> encodes pan/tilt into CH0/CH1, packs 16×11‑bit payload, appends CRC‑D5, and streams at 420 kbaud via Serial1.</p>
+      <p>Reference: helper block near the end of file.</p>
+    </div>
+
+    <div class="box">
+      <h2>5. ESP‑NOW transport</h2>
+      <p>Still uses the lightweight <code>ControlPacket</code>. <code>transmitWirelessTargets()</code> smooths angles (<code>WIRELESS_SMOOTH_ALPHA</code>) before calling <code>esp_now_send()</code>.</p>
+    </div>
+
+    <div class="box">
+      <h2>6. Serial CLI</h2>
+      <p><code>processSerialCommand()</code> exposes <code>center</code>, <code>debug</code>, <code>deadband X</code>, <code>smooth Y</code>, and <code>mode ...</code> to flip transports live.</p>
+    </div>
+
+  </div>
+</body>
+</html>

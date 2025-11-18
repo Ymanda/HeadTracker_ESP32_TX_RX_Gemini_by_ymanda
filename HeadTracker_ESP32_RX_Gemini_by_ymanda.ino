@@ -3,13 +3,27 @@
 #include <esp_now.h>
 #include <HardwareSerial.h>
 
+// ============================================================================
+// AtomRC gimbal RX bridge (drone side)
+// ----------------------------------------------------------------------------
+// Diagram reference (mirrors HTML diagram titles):
+//   A. Servo + failsafe core
+//   B. Input modes (PPM / CRSF / ESP-NOW)
+//   C. Transport receivers (ISR, CRSF parser, ESP-NOW callback)
+//   D. CLI + tuning helpers
+// Use editor folding on the section separators to hide implementation details.
+// ============================================================================
+
 // -----------------------------------------------------------------------------
 // USER CONFIGURATION — RX (DRONE SIDE)
 // -----------------------------------------------------------------------------
-const char* ELRS_BIND_PHRASE = "CHANGE_ME";  // pour mémoire
-// MAC de l'ESP32 TX (si tu veux unidirectionnel ESP-NOW; ici pas obligatoire)
-const uint8_t ESP_NOW_PEER_MAC[6] = {0x24,0x6F,0x28,0xAA,0xBB,0xCC};
+const char* ELRS_BIND_PHRASE = "gimbal";  // pour mémoire
+// MAC de l'ESP32 TX (WiFi.macAddress() sur le TX -> 3C:8A:1F:A6:5A:80)
+const uint8_t ESP_NOW_PEER_MAC[6] = {0x3C, 0x8A, 0x1F, 0xA6, 0x5A, 0x80};
 
+// ---------------------------------------------------------------------------
+// SECTION A — Servo core & smoothing knobs
+// ---------------------------------------------------------------------------
 // Servo setup
 Servo panServo;
 Servo tiltServo;
@@ -55,7 +69,7 @@ int   smoothFactor = 5;
 const float LINK_SMOOTH_ALPHA = 0.25f;
 
 // -----------------------------------------------------------------------------
-// Modes d'entrée sur RX
+// SECTION B — Input mode selection
 // -----------------------------------------------------------------------------
 enum InputMode {
   MODE_PPM_LOCAL = 0,   // lit PPM sur GPIO2 (test, filaire)
@@ -63,7 +77,7 @@ enum InputMode {
   MODE_ESPNOW    = 2    // lit ESP-NOW (depuis TX ESP32)
 };
 
-InputMode inputMode       = MODE_ESPNOW;
+InputMode inputMode       = MODE_CRSF_ELRS;
 const int MODE_SELECT_PIN = -1;
 const bool MODE_SELECT_PULLUP = true;
 
@@ -85,7 +99,7 @@ const uint8_t  CRSF_MAX_FRAME_LEN         = 64;
 bool espNowReady = false;
 
 // -----------------------------------------------------------------------------
-// Packet commun TX/RX
+// Packet commun TX/RX (ESP-NOW only; CRSF uses native frames)
 // -----------------------------------------------------------------------------
 struct __attribute__((packed)) ControlPacket {
   uint16_t header;   // 0xA55A
@@ -127,7 +141,7 @@ int microsecondsToDegrees(int microseconds, int degMin, int degMax);
 void setup() {
   Serial.begin(115200);
 
-  // Servos
+  // 1) Attach servos immediately so failsafe centers are respected.
   panServo.attach(PAN_PIN);
   tiltServo.attach(TILT_PIN);
   currentPan  = constrain(PAN_CENTER,  PAN_MIN,  PAN_MAX);
@@ -137,7 +151,7 @@ void setup() {
   panServo.write(currentPan);
   tiltServo.write(currentTilt);
 
-  // PPM input
+  // 2) Arm the optional PPM test input (useful when ESP32 is wired straight to goggles).
   pinMode(PPM_INPUT_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(PPM_INPUT_PIN), ppmInterrupt, CHANGE);
 
@@ -145,7 +159,7 @@ void setup() {
   Serial.println("=====================================");
   Serial.println("Modes: PPM local, CRSF/ELRS, ESP-NOW");
 
-  // Mode hardware optionnel
+  // 3) Optional hardware selector (jumper/switch) chooses between wired PPM and CRSF.
   if (MODE_SELECT_PIN >= 0) {
     pinMode(MODE_SELECT_PIN, MODE_SELECT_PULLUP ? INPUT_PULLUP : INPUT);
     bool high = digitalRead(MODE_SELECT_PIN);
@@ -161,13 +175,13 @@ void setup() {
 }
 
 // -----------------------------------------------------------------------------
-// LOOP
+// SECTION C — Main loop + failsafe handling
 // -----------------------------------------------------------------------------
 void loop() {
   bool haveSignal = false;
   unsigned long now = millis();
 
-  // 1) Lecture selon le mode
+  // 1) Poll whichever transport is active and update lastValidFrame.
   if (inputMode == MODE_PPM_LOCAL) {
     if (ppmFrameComplete) {
       processPPMFrame();
@@ -191,10 +205,10 @@ void loop() {
     targetTilt = TILT_CENTER;
   }
 
-  // 3) Mise à jour des servos
+  // 3) Slew servos toward target (keeps motion smooth even if packets jump).
   updateServos();
 
-  // 4) Commandes série
+  // 4) Serial CLI for runtime tuning / diagnostics.
   if (Serial.available()) {
     String cmd = Serial.readString();
     cmd.trim();
@@ -205,8 +219,9 @@ void loop() {
 }
 
 // -----------------------------------------------------------------------------
-// PPM RX (local) pour test / mode filaire
+// SECTION D — Transport receivers
 // -----------------------------------------------------------------------------
+// --- PPM ISR (local wired fallback) ---
 void IRAM_ATTR ppmInterrupt() {
   static unsigned long lastPulseTime = 0;
   unsigned long currentTime = micros();
@@ -254,7 +269,8 @@ void processPPMFrame() {
 // -----------------------------------------------------------------------------
 // ESP-NOW RX
 // -----------------------------------------------------------------------------
-void onEspNowRecv(const uint8_t* mac, const uint8_t* data, int len) {
+void onEspNowRecv(const esp_now_recv_info* info, const uint8_t* data, int len) {
+  (void)info; // Source MAC lives inside info->src_addr if needed later.
   if (len != sizeof(ControlPacket)) return;
 
   ControlPacket pkt;
@@ -301,6 +317,7 @@ void initElrsUartRX() {
   Serial.println("ELRS CRSF UART RX ready.");
 }
 
+// Stateful parser for CRSF RC_CHANNELS_PACKED frames arriving over UART1.
 void readCrsfPackets() {
   if (!elrsReady) initElrsUartRX();
   if (!elrsReady) return;
@@ -352,9 +369,10 @@ void readCrsfPackets() {
 }
 
 // -----------------------------------------------------------------------------
-// Servo update
+// SECTION E — Servo motion & CLI
 // -----------------------------------------------------------------------------
 void updateServos() {
+  // Slew limiter: move gradually toward targets to avoid gimbal overshoot.
   int panDiff  = targetPan  - currentPan;
   int tiltDiff = targetTilt - currentTilt;
 

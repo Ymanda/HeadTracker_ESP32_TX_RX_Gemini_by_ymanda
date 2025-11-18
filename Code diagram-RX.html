@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>HeadTracker RX Code Diagram</title>
+  <style>
+    body { font-family:"Segoe UI","Helvetica Neue",Arial,sans-serif; background:#0f1115; color:#f5f5f5; margin:0; padding:2rem; }
+    h1 { margin-top:0; }
+    .lane { display:flex; flex-direction:column; gap:1rem; max-width:900px; margin:auto; }
+    .box { border-left:6px solid #ffb347; background:#1c1f26; padding:1rem 1.5rem; box-shadow:0 4px 12px rgba(0,0,0,0.45); }
+    .box h2 { margin:0 0 .5rem; font-size:1.2rem; color:#ffb347; }
+    .box p { margin:.3rem 0; line-height:1.5; }
+    code { background:#252932; padding:.1rem .35rem; border-radius:3px; }
+    .note { color:#bbb; font-size:.9rem; }
+  </style>
+</head>
+<body>
+  <h1>RX firmware overview (HeadTracker_ESP32_RX_Gemini_by_ymanda.ino)</h1>
+  <p class="note">Section titles mirror the <code>// SECTION ...</code> comments inside the sketch. Collapse them in your IDE to view the same structure.</p>
+  <div class="lane">
+
+    <div class="box">
+      <h2>A. Servo &amp; failsafe core</h2>
+      <p>Defines pan/tilt limits, smoothing (<code>smoothFactor</code>), and the slew limiter inside <code>updateServos()</code>. Any transport only needs to set <code>targetPan</code>/<code>targetTilt</code>.</p>
+    </div>
+
+    <div class="box">
+      <h2>B. Input mode selection</h2>
+      <p><code>InputMode</code> + <code>setInputMode()</code> decide between local PPM, CRSF/ELRS, or ESP‑NOW. Hardware jumper or serial command can switch at runtime.</p>
+    </div>
+
+    <div class="box">
+      <h2>C. Main loop &amp; failsafe</h2>
+      <p>The <code>loop()</code> function polls the active transport, tracks <code>lastValidFrame</code>, and recenters when the timeout hits. After that it slews servos and services the CLI.</p>
+    </div>
+
+    <div class="box">
+      <h2>D. Transport receivers</h2>
+      <p>Includes the PPM ISR, the ESP‑NOW callback (<code>onEspNowRecv</code>), and the stateful <code>readCrsfPackets()</code> parser. All of them end by updating the shared targets.</p>
+    </div>
+
+    <div class="box">
+      <h2>E. CLI &amp; diagnostics</h2>
+      <p><code>processSerialCommand()</code> exposes the same commands as TX plus <code>mode ...</code> for selecting the RX path. <code>testServoMovement()</code> exercises the gimbal.</p>
+    </div>
+
+  </div>
+</body>
+</html>

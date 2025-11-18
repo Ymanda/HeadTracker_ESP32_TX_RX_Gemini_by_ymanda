@@ -3,14 +3,29 @@
 #include <esp_now.h>
 #include <HardwareSerial.h>
 
+// ============================================================================
+// Skyzone → AtomRC TX bridge (goggles side)
+// ----------------------------------------------------------------------------
+// Section map (matching the HTML diagram titles):
+//   1. Inputs & globals        – pin map, servo limits, smoothing knobs.
+//   2. PPM acquisition loop    – interrupt handler + frame decoding.
+//   3. Mode dispatch           – wired PWM vs CRSF (ELRS) vs ESP-NOW.
+//   4. Transport helpers       – CRSF frame builder, ESP-NOW packet sender.
+//   5. Serial CLI              – runtime tuning + mode switching.
+// Each block is separated by headers so you can collapse them in editors.
+// ============================================================================
+
 // -----------------------------------------------------------------------------
 // USER CONFIGURATION — EDIT BEFORE FLASHING (TX = GOGGLES SIDE)
 // -----------------------------------------------------------------------------
-const char* ELRS_BIND_PHRASE = "CHANGE_ME";  // Pour rappel, même wording que dans ExpressLRS
-// MAC de l'ESP32 RX (print WiFi.macAddress() sur le RX et colle-le ici)
-const uint8_t ESP_NOW_PEER_MAC[6] = {0x24, 0x6F, 0x28, 0xAA, 0xBB, 0xCC};
+const char* ELRS_BIND_PHRASE = "gimbal";  // Même phrase que dans tes modules ExpressLRS
+// MAC de l'ESP32 RX (WiFi.macAddress() sur le RX -> F4:65:0B:49:12:94)
+const uint8_t ESP_NOW_PEER_MAC[6] = {0xF4, 0x65, 0x0B, 0x49, 0x12, 0x94};
 
-// Servo setup (pour tests locaux sur la table, sinon tu peux les ignorer)
+// ---------------------------------------------------------------------------
+// SECTION 1 — Inputs & globals
+// ---------------------------------------------------------------------------
+// Servo setup (for local bench tests; production units normally don't attach)
 Servo panServo;
 Servo tiltServo;
 
@@ -19,7 +34,7 @@ const int PPM_INPUT_PIN = 2;   // PPM signal from Skyzone HT OUT jack
 const int PAN_PIN       = 18;  // Pan servo output (TEST LOCAL)
 const int TILT_PIN      = 19;  // Tilt servo output (TEST LOCAL)
 
-// PPM processing variables
+// PPM processing variables capture the Skyzone HT signal (channels 5 & 6).
 volatile unsigned long ppmPulseStart = 0;
 volatile unsigned long ppmChannels[8] = {1500,1500,1500,1500,1500,1500,1500,1500};
 volatile int   ppmChannelIndex   = 0;
@@ -55,7 +70,7 @@ int   smoothFactor = 5;        // Lower = more responsive, higher = smoother.
 const float WIRELESS_SMOOTH_ALPHA = 0.35f;  // EWMA used when sending remotely
 
 // -----------------------------------------------------------------------------
-// Multi-transport configuration
+// SECTION 2 — Mode selection & transports
 // -----------------------------------------------------------------------------
 enum OutputMode {
   MODE_WIRED_PWM = 0,   // PPM -> PWM local (test bench)
@@ -63,7 +78,7 @@ enum OutputMode {
   MODE_ESPNOW    = 2    // PPM -> ESP-NOW (vers ESP32 RX sur drone)
 };
 
-OutputMode outputMode         = MODE_WIRED_PWM;
+OutputMode outputMode         = MODE_CRSF_ELRS;
 const int  MODE_SELECT_PIN    = -1;     // si tu veux un switch physique
 const bool MODE_SELECT_PULLUP = true;
 
@@ -87,6 +102,7 @@ uint8_t espNowPeer[6] = {0};          // Populated from ESP_NOW_PEER_MAC
 const unsigned long WIRELESS_SEND_INTERVAL_MS = 10;
 unsigned long lastWirelessSend = 0;
 
+// Lightweight telemetry used only for ESP-NOW link.
 struct __attribute__((packed)) ControlPacket {
   uint16_t header;   // Fixed marker 0xA55A
   uint16_t pan;      // Degrees
@@ -98,7 +114,7 @@ struct __attribute__((packed)) ControlPacket {
 float wirelessPan  = PAN_CENTER;
 float wirelessTilt = TILT_CENTER;
 
-// --- FORWARD DECLARATIONS ---
+// --- FORWARD DECLARATIONS (match Section titles for easy cross-ref) ---
 void processSerialCommand(String command);
 void testServoMovement();
 void IRAM_ATTR ppmInterrupt();
@@ -125,11 +141,11 @@ void setup() {
 
   memcpy(espNowPeer, ESP_NOW_PEER_MAC, sizeof(espNowPeer));
 
-  // Initialize servos (local test)
+  // 1) Optional bench servos, so you can watch motion without RF.
   panServo.attach(PAN_PIN);
   tiltServo.attach(TILT_PIN);
 
-  // Set to center position
+  // 2) Clamp and center everything before we ever drive motors or links.
   currentPan  = constrain(currentPan,  PAN_MIN,  PAN_MAX);
   currentTilt = constrain(currentTilt, TILT_MIN, TILT_MAX);
   panServo.write(currentPan);
@@ -142,11 +158,11 @@ void setup() {
   Serial.println("Tilt servo: 60° range");
   Serial.println("Starting in center position...");
 
-  // Setup PPM input interrupt
+  // 3) Wire HT OUT to GPIO2 and capture both rising/falling edges.
   pinMode(PPM_INPUT_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(PPM_INPUT_PIN), ppmInterrupt, CHANGE);
 
-  // Optional hardware switch between wired/wireless outputs
+  // 4) Read optional mode switch; otherwise default to wired PWM for safety.
   if (MODE_SELECT_PIN >= 0) {
     pinMode(MODE_SELECT_PIN, MODE_SELECT_PULLUP ? INPUT_PULLUP : INPUT);
     bool high = digitalRead(MODE_SELECT_PIN);
@@ -167,17 +183,17 @@ void setup() {
 }
 
 // -----------------------------------------------------------------------------
-// LOOP
+// SECTION 3 — Main loop (PPM decode + mode dispatcher)
 // -----------------------------------------------------------------------------
 void loop() {
-  // Process PPM data
+  // 1) Process freshly captured PPM frame (if ISR flagged one).
   if (ppmFrameComplete) {
     processPPMFrame();
     ppmFrameComplete = false;
     lastValidFrame = millis();
   }
 
-  // Check for PPM timeout
+  // 2) If goggles stopped sending HT frames, drift back to mechanical center.
   if (millis() - lastValidFrame > PPM_TIMEOUT) {
     // No PPM signal - return to center
     targetPan  = PAN_CENTER;
@@ -186,10 +202,10 @@ void loop() {
 
   bool ppmValid = (millis() - lastValidFrame) <= PPM_TIMEOUT;
 
-  // Handle outputs depending on selected mode
+  // 3) Bridge smoothed targets to the selected transport.
   handleOutputs(ppmValid);
 
-  // Process serial commands
+  // 4) Optional serial CLI (tuning + mode changes).
   if (Serial.available()) {
     String command = Serial.readString();
     command.trim();
@@ -200,7 +216,7 @@ void loop() {
 }
 
 // -----------------------------------------------------------------------------
-// PPM interrupt handler (TX side = same que ta version)
+// SECTION 4 — PPM acquisition
 // -----------------------------------------------------------------------------
 void IRAM_ATTR ppmInterrupt() {
   static unsigned long lastPulseTime = 0;
@@ -211,15 +227,15 @@ void IRAM_ATTR ppmInterrupt() {
     // Rising edge - start measuring pulse
     lastPulseTime = currentTime;
   } else {
-    // Falling edge - end of pulse
+    // Falling edge - end of pulse: measure channel width.
     unsigned long pulseDuration = currentTime - lastPulseTime;
 
     if (pulseDuration > PPM_FRAME_GAP) {
-      // Frame sync detected - start new frame
+      // Gap > 4 ms = new frame, reset channel index.
       ppmChannelIndex = 0;
       ppmFrameComplete = true;
     } else if (pulseDuration >= PPM_PULSE_MIN && pulseDuration <= PPM_PULSE_MAX) {
-      // Valid channel pulse
+      // Valid channel pulse: store sequentially until CH8.
       if (ppmChannelIndex < 8) {
         ppmChannels[ppmChannelIndex] = pulseDuration;
         ppmChannelIndex++;
@@ -240,7 +256,7 @@ void processPPMFrame() {
   if (panPulse < PPM_PULSE_MIN || panPulse > PPM_PULSE_MAX)   panPulse = 1500;
   if (tiltPulse < PPM_PULSE_MIN || tiltPulse > PPM_PULSE_MAX) tiltPulse = 1500;
 
-  // Convert PPM to servo positions  (1000..2000µs -> limits)
+  // Convert microseconds to our mechanical limits (0..180° pan, 45..135° tilt).
   int newPan  = map(panPulse,  1000, 2000, PAN_MIN,  PAN_MAX);
   int newTilt = map(tiltPulse, 1000, 2000, TILT_MIN, TILT_MAX);
 
@@ -260,6 +276,7 @@ void processPPMFrame() {
   }
 }
 
+// Section 5 handles local bench servos; production builds often skip this.
 void updateServos() {
   // Smooth movement towards target
   int panDiff  = targetPan  - currentPan;
@@ -286,7 +303,7 @@ void updateServos() {
 }
 
 // -----------------------------------------------------------------------------
-// Serial commands (identiques à ta version)
+// SECTION 5 — Serial CLI helpers
 // -----------------------------------------------------------------------------
 void processSerialCommand(String command) {
   command.toLowerCase();
@@ -394,7 +411,7 @@ void testServoMovement() {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-transport helpers (TX)
+// SECTION 6 — Transport helpers (TX side)
 // ---------------------------------------------------------------------------
 void handleOutputs(bool ppmValid) {
   if (outputMode == MODE_WIRED_PWM) {
@@ -493,6 +510,7 @@ uint16_t packetChecksum(const ControlPacket& pkt) {
   return pkt.header ^ pkt.pan ^ pkt.tilt ^ pkt.flags ^ 0x55AA;
 }
 
+// Build a RC_CHANNELS_PACKED frame with pan on CH0 and tilt on CH1.
 void sendCrsfRcFrame(int panDeg, int tiltDeg, bool valid) {
   if (!elrsReady) initElrsUart();
   if (!elrsReady) return;
