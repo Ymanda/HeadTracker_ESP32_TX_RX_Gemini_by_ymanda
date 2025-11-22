@@ -1,99 +1,82 @@
-# Skyzone → AtomRC Head Tracker Bridge
+# 1. Skyzone → AtomRC Head Tracker Bridge
 
-`Gimbal-tracking-Gemini.ino` turns the Skyzone HT OUT jack into smooth pan/tilt motion on an AtomRC two–servo gimbal driven by an ESP32.  
-The project’s goal is to mirror the pilot’s head movement (≈180° usable yaw) while letting the camera sweep its full 270° mechanical travel. To hide the extra 90°, the sketch keeps the gimbal synchronized through most of the range and progressively accelerates the camera near the edges so it can cover the remaining arc without the pilot noticing a hard stop. A light smoothing filter and user-tunable deadband keep the rig steady in turbulent moments.
+Two ESP32 sketches:
+- `HeadTracker_ESP32_TX_Gemini_by_ymanda.ino` (goggles side)
+- `HeadTracker_ESP32_RX_Gemini_by_ymanda.ino` (drone/gimbal side)
 
-## Project layout
+Works three ways: wired PWM, CRSF/ELRS, or ESP-NOW bridge. RX prefers CRSF when present and falls back to ESP-NOW automatically.
 
+## 2. Pin maps (default)
+**Goggles ESP32 (TX sketch)**
+- PPM in: `GPIO25` (interrupt pin; change `PPM_INPUT_PIN` if needed)
+- Servos (bench/local PWM): `GPIO18` pan, `GPIO19` tilt
+- ELRS UART TX → module RX: `GPIO17` @ 420000 baud
+- Mode switch inputs (pulled-up): `GPIO32` (SW A), `GPIO33` (SW B)
+
+**Drone ESP32 (RX sketch)**
+- Servos: `GPIO18` pan, `GPIO19` tilt
+- CRSF UART RX ← module TX: `GPIO16` @ 420000 baud
+- PPM (optional local mode): `GPIO2` (`PPM_INPUT_PIN`; can be changed)
+
+**Pin caution:** Avoid sensitive/boot pins if they conflict on your board (e.g., `GPIO0/2/15`, `EN`, flash/PSRAM pins). If you move anything, update the constants at the top of each sketch.
+
+## 3. 3-position switch (TX side)
+- A=LOW, B=HIGH → **Wired PWM** (local bench)
+- A=HIGH, B=LOW → **CRSF/ELRS** (normal use)
+- A=HIGH, B=HIGH (middle) → **ESP-NOW** (manual fallback)
+RX side: no switch needed—auto-prefers CRSF when frames are present, else ESP-NOW.
+
+## 4. ASCII sketches
+**Wired PWM (bench, single ESP32)**
 ```
-headtracker/
-├── Gimbal-tracking-Gemini.ino          # Main firmware for ESP32 + ESP32Servo
-└── helpers-doc/
-    ├── PPM_Remapper_Arduino.ino        # Example showing raw PPM channel copy
-    └── What is IRAM_ATTR.txt           # Notes about placing ISRs in IRAM
-```
-
-Only `Gimbal-tracking-Gemini.ino` needs to be uploaded to the ESP32. The helper document is a reminder of how the earlier PPM remapper worked and why the interrupt is tagged with `IRAM_ATTR`.
-
-## Hardware overview
-- **Input** – Skyzone FPV goggles (tested with 04X PRO) HT OUT jack, emitting head tracking on PPM channels 5 (yaw) and 6 (pitch).
-- **Controller** – ESP32 running the sketch, powered from the goggles or a dedicated BEC.
-- **Output** – AtomRC gimbal servos on GPIO18 (pan) and GPIO19 (tilt).
-- **Power/signal split** – The HT OUT signal is shared: one branch goes to the flight controller as usual, the second branch feeds the ESP32 which regenerates the servo PWM.
-
-## How the firmware works
-1. **PPM capture** – GPIO2 uses an interrupt (`ppmInterrupt`) to decode 8 PPM slots. The ISR rejects out-of-range pulses and marks a frame complete when it sees a sync gap (`PPM_FRAME_GAP`).
-2. **Channel extraction** – `processPPMFrame` reads channels 5 and 6, applies safety limits, then maps them onto the servo limits. By tweaking `PAN_MIN/MAX` and `TILT_MIN/MAX` you can match any gimbal.
-3. **Head ↔ camera ratio** – Because the pilot only rotates about 180° comfortably, most of the range keeps a 1:1 mapping. Near the extremes (where the servo range exceeds the pilot’s), the output gets stretched so the camera sweeps to 270° without noticeable jumps.
-4. **Smoothing and deadband** – `updateServos` uses a first-order “slew limiter” governed by `smoothFactor` and `deadband`. The defaults remove micro-jitters but you can tune them at runtime.
-5. **Serial tooling** – Through the USB serial monitor you can center the gimbal, dump live channel values, run a travel test, or change tuning parameters, which is handy when the tracker is strapped to a pilot.
-
-## Key settings
-
-| Setting | Location | Purpose |
-| --- | --- | --- |
-| `PPM_INPUT_PIN` | top of sketch | GPIO wired to HT OUT (must be interrupt capable) |
-| `PAN/TILT_PIN` | top of sketch | Servo outputs; move if your AtomRC controller uses other pins |
-| `PAN_*` & `TILT_*` | top of sketch | Define the mechanical range and centers for each axis |
-| `deadband` | runtime variable | Neutral zone around center to suppress micro-shakes |
-| `smoothFactor` | runtime variable | Higher values = slower but steadier motion |
-
-### Serial commands
-- `center` – return both servos to their defined centers.
-- `debug` – print the raw PPM values and current servo targets.
-- `limits` – report the configured min/max angles.
-- `deadband <value>` – change the deadband (0–50).
-- `smooth <value>` – change the smoothing factor (1–50).
-- `test` – run a scripted sweep to check binding or stalled motors.
-
-## Usage checklist
-1. Wire the HT OUT signal and ground from the Skyzone goggles to ESP32 GPIO2 and GND. Share the signal with the flight controller if necessary using a simple Y harness.
-2. Connect AtomRC pan servo to GPIO18 and tilt servo to GPIO19 (or adjust the pin constants).
-3. Flash `Gimbal-tracking-Gemini.ino` with the Arduino IDE or PlatformIO (board: ESP32 Dev Module).
-4. Open the serial monitor at 115200 baud; when the tracker is stationary run `center` to align the gimbal mechanically.
-5. Wear the goggles, move your head slowly through its normal range, and verify the gimbal stays synchronized. If you feel oscillations, raise `smoothFactor`; if latency feels high, lower it instead.
-6. Once tuned, disconnect USB power, power the ESP32 from your flight battery/BEC, and strap it to the goggles or the headset strap.
-
-
-## Operating modes
-
-### 1. Wired PWM (single ESP32)
-### ===============================
-```
-Skyzone HT OUT  ──> GPIO2 (PPM) ──> ESP32 ──> GPIO18/19 ──> AtomRC pan/tilt servos
-                              GND ────────────────────────┘
+Skyzone HT OUT (PPM) ---> GPIO25 (PPM in)
+                       \-> smoothing -> GPIO18/19 -> servos
+GND shared
 ```
 
-Skyzone HT OUT (PPM)  ---->  ESP32 RX GPIO2 (PPM_INPUT_PIN)
-GND Skyzone           ---->  ESP32 GND
-
-ESP32 RX GPIO18  ---->  Pan servo signal
-ESP32 RX GPIO19  ---->  Tilt servo signal
-Servos +V        ---->  BEC 5V
-Servos GND       ---->  BEC GND & ESP32 GND
-
-The goggles’ head-tracker signal is read and immediately turned into PWM on GPIO18/19. This is the original “two wires only” setup for benches or when the ESP32 sits close to the gimbal.
-
-### 2. ELRS / CRSF bridge
+**CRSF / ELRS link**
 ```
-[Goggles ESP32] --PPM--> smoothing --> CRSF stream @420k ------> ELRS TX (bind phrase X)
-                                                                ~~~~~ RF ~~~~~
-[Drone ESP32] <--------------- CRSF from ELRS RX --------------- packet decode -> servos
-```
-The goggles-side ESP32 now emits genuine CRSF RC frames on UART1, so any ExpressLRS TX/RX pair behaves exactly like a “real” radio link. Enter the same bind phrase on both ELRS modules, wire their CRSF pads to the ESP32 UART pins, and the link will auto-resync after a brown-out. Only two channels are used (pan & tilt), but you keep the same smoothing, deadband, and failsafe logic as in the wired setup.
-
-### 3. ESP-NOW pair (two ESP32s)
-```
-Goggles ESP32   Wi-Fi STA + ESP-NOW  ~~~wireless~~~  Drone ESP32
-PPM -> filter -> packet             <----MAC pair---->  packet -> servos
+[Goggles ESP32 TX] --PPM--> filter -> CRSF @420k -> ELRS TX module
+                                         ~~~ RF ~~~
+[Drone ESP32 RX] <- CRSF from ELRS RX -> decode -> servos (GPIO18/19)
 ```
 
-[TX Goggles ESP32]                          [RX Drone ESP32]
-PPM in (GPIO2)                              Servos on GPIO18/19
-WiFi STA + ESP-NOW  ~~~~~~wireless~~~~~~>   WiFi STA + ESP-NOW RX
+**ESP-NOW pair**
+```
+Goggles ESP32 (ESP-NOW TX)  ~~~ Wi-Fi STA/ESP-NOW ~~~  Drone ESP32 (ESP-NOW RX)
+PPM -> filter -> packet                                packet -> servos
+```
 
-Alim TX : 5V/USB / BEC                      Alim RX : BEC 5V (ou 5V FC)
-GND only toward the drone, no need direct wire TX<->RX.
+## 5. Finding Skyzone HT OUT wires with a multimeter
+1) Plug the stereo jack into the Skyzones. Open the plug if possible.  
+2) Set multimeter to continuity/beep.  
+3) **Ground:** put black probe on the sleeve (outer ring). Touch red probe to the wires; the one that beeps to sleeve is ground.  
+4) **Signal:** keep black on ground wire. Switch to DC volts; power on goggles/head tracker so PPM is present. Probe the remaining wires with red; the one showing a small pulsing voltage is the PPM signal (pan/tilt). The third lead is the “dead”/unused wire—ignore it.  
+5) Wire PPM → ESP32 PPM input; ground → ESP32 GND (shared with servos and ELRS module).
 
+## 6. USB “red-wire cut” trick
+When the ESP32 is powered from a flight battery/BEC and you also plug USB for Serial Monitor:
+- Cut the **5V (red)** conductor inside the USB cable.
+- Leave GND and data (D+/D−) intact.
+This prevents USB backfeeding the BEC and avoids needing TVS/fast diodes for plug-in transients.
 
-Both ESP32 boards talk directly over ESP-NOW using their Wi-Fi MAC addresses (fill them in at the top of the TX/RX sketches). No router, no FC involvement—just a private wireless bridge with the same smoothing and failsafe behavior.
+## 7. ELRS module roles (important)
+- Goggles side needs a **TX-capable ELRS module**.
+- Drone side needs an **RX module**.
+Using two RX modules will never bind (the photo with two receivers is illustrative only). Ensure both share the same bind phrase and region (LBT/FCC).
+
+## 8. Operating modes & failsafe
+- **TX side:** switch sets Wired PWM / CRSF-ELRS / ESP-NOW. In ELRS mode, flip to middle if you want to force ESP-NOW as a manual fallback.
+- **RX side:** auto-selects source. CRSF has priority; if no valid CRSF frames within timeout, it uses ESP-NOW. No manual action required.
+
+## 9. Useful serial commands
+- `center` – return servos to centers
+- `debug` – dump channel/targets
+- `test` – sweep servos
+- `deadband X` (TX) – adjust deadband
+- `mode pwm|auto` (RX) – local PPM vs RF auto
+
+## 10. Flashing quick steps
+- Board: ESP32 Dev Module (Arduino IDE)
+- Baud: 115200 for Serial Monitor; 420000 on UART1 for CRSF
+- Set pins above as needed; upload TX sketch to goggles ESP32, RX sketch to drone ESP32
