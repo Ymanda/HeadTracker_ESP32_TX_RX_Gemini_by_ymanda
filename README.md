@@ -80,3 +80,30 @@ Using two RX modules will never bind (the photo with two receivers is illustrati
 - Board: ESP32 Dev Module (Arduino IDE)
 - Baud: 115200 for Serial Monitor; 420000 on UART1 for CRSF
 - Set pins above as needed; upload TX sketch to goggles ESP32, RX sketch to drone ESP32
+
+## 11. Getting ESP-NOW MAC addresses (for pairing)
+You need each ESP32’s Wi‑Fi STA MAC to fill `ESP_NOW_PEER_MAC` (TX) and the RX peer list.
+
+**Method A — Arduino IDE (easy)**
+1) Open Arduino IDE → File → Examples → WiFi → `WiFiScan` (or any blank sketch).  
+2) Replace contents with:
+```
+#include <WiFi.h>
+void setup() {
+  Serial.begin(115200);
+  WiFi.mode(WIFI_STA);
+  Serial.printf("STA MAC: %s\n", WiFi.macAddress().c_str());
+}
+void loop() {}
+```
+3) Select board `ESP32 Dev Module`, correct COM/tty port.  
+4) Upload, then open Serial Monitor at 115200. The printed `STA MAC` is what you copy (format: `AA:BB:CC:DD:EE:FF`).
+5) Repeat on the second ESP32 and note both MACs. Put the RX MAC into `ESP_NOW_PEER_MAC` in the TX sketch. If you want reverse pairing, also add the TX MAC in the RX peer list (currently RX just listens, so only TX needs the RX MAC).
+
+**Method B — CLI with esptool**
+1) Install `esptool.py` (comes with Arduino IDE install or `pip install esptool`).  
+2) Connect the ESP32 over USB and find the port (e.g., `/dev/ttyUSB0`, `/dev/ttyACM0`, `COM3`).  
+3) Run: `esptool.py --port /dev/ttyUSB0 read_mac`  
+4) Note the `MAC:` line. Repeat for the other board.
+
+Tip: If your ESP32 boot log shows the MAC at reset, you can also just open Serial Monitor at power-up and read the `wifi: mode : sta (...) mac:aa:bb:cc:dd:ee:ff` line.
