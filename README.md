@@ -125,9 +125,8 @@ deadband X  = set deadband (TX only)
 Wiring ASCII
 
 Skyzone → ESP32 TX
-Skyzone HT PPM ─────┐
-Skyzone GND ────────┴───> ESP32 GND
-                     └──> GPIO25
+Skyzone HT PPM ─────────> GPIO25
+Skyzone GND ────────────> ESP32 GND
 
 ESP32 TX → ELRS
 GPIO17 (TX) → ELRS module RX
