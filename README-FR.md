@@ -5,11 +5,11 @@ Transforme le PPM head-tracker Skyzone en commandes PAN/TILT envoyées via ELRS 
 Diagramme :
 Skyzone HT (PPM)
 
-┌───────────────┐ - - - - CRSF/ELRS - - - ┌───────────────┐
-│ - ESP32 TX - -│ - - - ------------->- - | - - ESP32 -RX │
-│(côté lunettes)│ - - - - - - - - - - - - │ (côté gimbal) │
-└───────────────┘ - - - ESP-NOW secours - └───────────────┘
-│ - - - - - - - - - - - - - - - - - - - - - - - - -│
+┌───────────────┐ - - - - CRSF/ELRS - - - ┌───────────────┐-
+│ - ESP32 TX - -│ - - - ------------->- - | - - ESP32 -RX │-
+│(côté lunettes)│ - - - - - - - - - - - - │ (côté gimbal) │-
+└───────────────┘ - - - ESP-NOW secours - └───────────────┘-
+│ - - - - - - - - - - - - - - - - - - - - - - - - -│-
 └── PWM bench (optionnel) - - - - - - - - -- - - - └── Servos PAN/TILT
 
 Affectation des broches
